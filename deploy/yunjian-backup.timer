@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Yunjian backup
+
+[Timer]
+OnCalendar=*-*-* 04:20:00 Asia/Shanghai
+RandomizedDelaySec=300
+Persistent=true
+Unit=yunjian-backup.service
+
+[Install]
+WantedBy=timers.target

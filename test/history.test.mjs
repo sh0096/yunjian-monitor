@@ -1,0 +1,83 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {randomBytes} from 'node:crypto';
+import {mkdtempSync,rmSync,readFileSync,statSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {DatabaseSync} from 'node:sqlite';
+import {Store} from '../server/store.mjs';
+import {createApp} from '../server/app.mjs';
+import {createVerifiedBackup} from '../server/backup.mjs';
+import {JdLegacy} from '../server/jd.mjs';
+function fixture(t){
+  const dir=mkdtempSync(join(tmpdir(),'yunjian-history-')),key=randomBytes(32),store=new Store(dir,key);
+  t.after(()=>{store.close();rmSync(dir,{recursive:true,force:true});});
+  const id=store.add('fixture',{tgt:'fixture-only-secret',wskey:'fixture-only-secret'});
+  return {dir,key,store,id};
+}
+const data=(up,extra={})=>({devices:[{id:'fixture-device',online:true,uploadRaw:String(up),downloadRaw:'8',statusAt:Date.now(),...extra}]});
+test('recent readings retain spikes; minute means and peaks use every valid sample',t=>{
+  const {store,id}=fixture(t),at=Math.floor(Date.now()/60_000)*60_000;
+  for(const [i,up] of [100,900,200].entries())store.save(id,data(up),at+i*5000);
+  const fast=store.trafficHistory(id,1,at+10_000);
+  assert.deepEqual(fast.map(r=>r.devices[0].uploadBps),[100,900,200].map(n=>n*1024));
+  const minute=store.trafficHistory(id,6,at+10_000)[0].devices[0];
+  assert.equal(minute.uploadBps,400*1024);assert.equal(minute.uploadPeak,900*1024);assert.equal(minute.uploadCount,3);
+  store.save(id,data(200),at+10_000);
+  assert.equal(store.trafficHistory(id,6,at+10_000)[0].devices[0].uploadCount,3);
+  store.save(id,data(0,{online:false}),at+15_000);
+  store.save(id,data(0,{error:'fixture failure'}),at+20_000);
+  assert.equal(store.trafficHistory(id,1,at+20_000).at(-1).devices[0].uploadBps,null);
+  assert.equal(store.trafficHistory(id,6,at+20_000)[0].devices[0].uploadCount,3);
+});
+test('upgrade preserves old raw history; retention and account deletion bound new storage',t=>{
+  const {store,id}=fixture(t),at=Date.now();
+  store.db.prepare('INSERT INTO snapshots VALUES(?,?,?)').run(id,at-60_000,JSON.stringify(data(10)));
+  store.save(id,data(20),at);
+  const rows=store.trafficHistory(id,1,at);
+  assert.equal(rows[0].resolution,'legacy-minute');assert.equal(rows[0].devices[0].uploadBps,10240);
+  assert.equal(rows[1].resolution,'sample');
+  store.save(id,data(30),at+2*3600_000+1);
+  assert.equal(store.db.prepare('SELECT count(*) AS n FROM fast_samples').get().n,1);
+  store.remove(id);
+  for(const table of ['fast_samples','minute_samples','daily_earnings'])assert.equal(store.db.prepare(`SELECT count(*) AS n FROM ${table}`).get().n,0);
+});
+test('earnings records only observed days and rejects invented ranges at the authenticated API',async t=>{
+  const {store,id,key}=fixture(t),at=Date.now();
+  store.save(id,{...data(10),earningsDay:'2026-10-16',earningsAt:at,todayPoints:136},at);
+  store.save(id,{...data(10),earningsDay:'2026-10-16',earningsAt:at+1,todayPoints:138},at+1);
+  assert.deepEqual(store.dailyEarnings(id).map(r=>[r.day,r.points]),[['2026-10-16',138]]);
+  const app=createApp({key,password:'fixture',origin:'http://fixture.local',pollSeconds:5},store),session=store.login();
+  await new Promise(r=>app.server.listen(0,'127.0.0.1',r));
+  t.after(()=>new Promise(r=>app.server.close(r)));
+  const base='http://127.0.0.1:'+app.server.address().port+'/api/accounts/'+id+'/history';
+  assert.equal((await fetch(base+'?hours=1')).status,401);
+  const request=hours=>fetch(base+'?hours='+hours,{headers:{Cookie:'yj_session='+session.token}});
+  assert.equal((await request('8760')).status,400);
+  const result=await (await request('0.5')).json();assert.equal(result.resolution,'sample');assert.ok(!JSON.stringify(result).includes('fixture-only-secret'));
+});
+test('daytime earnings are hourly; Shanghai midnight refreshes immediately and then every ten minutes',async()=>{
+  const jd=new JdLegacy();let calls=0;
+  jd.list=async()=>[{id:'fixture-device',mac:'fixture',online:true}];
+  jd.status=async()=>({uploadBps:1024,downloadBps:0});
+  jd.earnings=async()=>{calls++;return [{mac:'fixture',today:100,all:1000}];};
+  const start=Date.parse('2026-10-15T15:55:00Z');
+  let previous=await jd.collect({}, {now:start});
+  previous=await jd.collect({}, {previous,now:start+4*60_000});assert.equal(calls,1);
+  const midnight=Date.parse('2026-10-15T16:00:00Z');
+  previous=await jd.collect({}, {previous,now:midnight});assert.equal(calls,2);assert.equal(previous.earningsDay,'2026-10-16');
+  previous=await jd.collect({}, {previous,now:midnight+9*60_000});assert.equal(calls,2);
+  previous=await jd.collect({}, {previous,now:midnight+10*60_000});assert.equal(calls,3);
+});
+test('online backup restores encrypted credentials, removes sessions, detects wrong keys and retains seven daily copies',async t=>{
+  const {store,id,key,dir}=fixture(t);store.save(id,data(100));const session=store.login();
+  const start=Date.now();let result;
+  for(let i=0;i<8;i++)result=await createVerifiedBackup({dataDir:dir,key,at:start+i*86400_000});
+  assert.equal(result.retained,7);assert.equal(statSync(result.path).mode&0o777,0o600);
+  assert.ok(!readFileSync(result.path).includes(Buffer.from('fixture-only-secret')));
+  const recovered=new DatabaseSync(result.path,{readOnly:true});
+  assert.equal(recovered.prepare('SELECT count(*) AS n FROM accounts').get().n,1);
+  assert.equal(recovered.prepare('SELECT count(*) AS n FROM sessions').get().n,0);recovered.close();
+  assert.ok(store.session(session.token));assert.equal(store.backupStatus().verified,true);
+  await assert.rejects(createVerifiedBackup({dataDir:dir,key:randomBytes(32),at:start+8*86400_000}));
+});

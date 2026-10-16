@@ -1,0 +1,28 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {randomBytes} from 'node:crypto';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {Store} from '../server/store.mjs';
+import {createApp} from '../server/app.mjs';
+import {configuration} from '../server/config.mjs';
+test('first-run password setup is restricted to loopback and can run only once',async t=>{
+  const dir=mkdtempSync(join(tmpdir(),'yunjian-setup-'));
+  const env={ENCRYPTION_KEY:randomBytes(32).toString('base64'),ADMIN_PASSWORD_HASH:'SETUP',DATA_DIR:dir};
+  assert.throws(()=>configuration({...env,NODE_ENV:'production',PUBLIC_ORIGIN:'https://example.com'}));
+  assert.throws(()=>configuration({...env,PUBLIC_ORIGIN:'http://example.com'}));
+  const config=configuration(env),store=new Store(dir,config.key),app=createApp(config,store);
+  await new Promise(r=>app.server.listen(0,'127.0.0.1',r));
+  t.after(async()=>{await new Promise(r=>app.server.close(r));store.close();rmSync(dir,{recursive:true,force:true});});
+  const base='http://127.0.0.1:'+app.server.address().port;
+  const setup=(origin,confirm)=>fetch(base+'/api/setup',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({password:'fixture-setup-password',confirm})});
+  assert.equal((await (await fetch(base+'/api/session')).json()).setupRequired,true);
+  assert.equal((await setup('https://other.example','fixture-setup-password')).status,403);
+  assert.equal((await setup(config.origin,'different')).status,400);
+  const racing=await Promise.all([setup(config.origin,'fixture-setup-password'),setup(config.origin,'fixture-setup-password')]);
+  assert.deepEqual(racing.map(r=>r.status).sort(),[201,409]);
+  assert.equal((await (await fetch(base+'/api/session')).json()).setupRequired,false);
+  assert.equal((await setup(config.origin,'fixture-setup-password')).status,409);
+  assert.ok(store.adminHash().startsWith('scrypt$'));
+});

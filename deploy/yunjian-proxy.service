@@ -1,0 +1,35 @@
+[Unit]
+Description=Yunjian HTTPS gateway
+After=network-online.target yunjian-monitor.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yunjian-proxy
+Group=yunjian-proxy
+Environment=XDG_DATA_HOME=/var/lib/yunjian-proxy/data
+Environment=XDG_CONFIG_HOME=/var/lib/yunjian-proxy/config
+Environment=GOMEMLIMIT=80MiB
+Environment=GOMAXPROCS=1
+ExecStart=/opt/yunjian-monitor/proxy/caddy run --config /etc/yunjian-proxy/Caddyfile --adapter caddyfile
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/yunjian-proxy
+MemoryHigh=96M
+MemoryMax=128M
+CPUQuota=10%
+CPUWeight=10
+IOWeight=10
+Nice=15
+TasksMax=64
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target

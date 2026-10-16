@@ -1,0 +1,5 @@
+{
+  "name": "yunjian-monitor", "version": "1.1.0", "private": true, "license": "MIT", "description": "Self-hosted JD Cloud Wireless Treasure device, bandwidth and earnings monitor", "repository": {"type": "git", "url": "https://github.com/sh0096/yunjian-monitor.git"}, "type": "module",
+  "engines": {"node": ">=24.0.0"},
+  "scripts": {"init": "node scripts/init.mjs", "start": "node --env-file-if-exists=.env server/index.mjs", "test": "node --test test/*.test.mjs", "backup": "node --env-file-if-exists=.env scripts/backup.mjs"}
+}

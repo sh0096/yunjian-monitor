@@ -1,0 +1,38 @@
+[Unit]
+Description=Yunjian private device monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yunjian-monitor
+Group=yunjian-monitor
+WorkingDirectory=/opt/yunjian-monitor/app
+EnvironmentFile=/etc/yunjian-monitor/runtime.env
+ExecStart=/opt/yunjian-monitor/node/bin/node --max-old-space-size=96 server/index.mjs
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=45
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/yunjian-monitor
+MemoryHigh=128M
+MemoryMax=192M
+CPUQuota=15%
+CPUWeight=10
+IOWeight=10
+Nice=15
+TasksMax=32
+LimitNOFILE=512
+
+[Install]
+WantedBy=multi-user.target

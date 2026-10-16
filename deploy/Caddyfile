@@ -1,0 +1,23 @@
+{
+    admin off
+    auto_https disable_redirects
+    https_port 8443
+    servers {
+        protocols h1 h2
+    }
+}
+
+http://monitor.example.com {
+    redir https://monitor.example.com:8443{uri} 308
+}
+
+https://monitor.example.com:8443 {
+    tls {
+        issuer acme {
+            disable_tlsalpn_challenge
+        }
+    }
+    reverse_proxy 127.0.0.1:8787 {
+        header_up X-Real-IP {remote_host}
+    }
+}
